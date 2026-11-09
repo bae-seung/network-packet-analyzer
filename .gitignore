@@ -218,3 +218,17 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Project: captures, local data and secrets
+*.pcap
+*.pcapng
+*.cap
+captures/
+logs/
+.env.*
+!.env.example
+secrets/
+*.pem
+*.key
+credentials*.json
+.DS_Store
