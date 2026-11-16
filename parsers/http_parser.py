@@ -1,98 +1,150 @@
+
+import re
+
+# HTTP 헤더 이름에 사용할 수 있는 문자
+TOKEN_PATTERN = re.compile(rb"[!#$%&'*+\-.^_`|~0-9A-Za-z]+")
+
+# 프로젝트 규칙에 따라 대문자 HTTP 메서드만 허용
+METHOD_PATTERN = re.compile(rb"[!#$%&'*+\-.^_`|~0-9A-Z]+")
+
+
+def valid_field_value(value: bytes) -> bool:
+    """
+    HTTP 헤더 값이나 응답 사유 문구에서
+    허용되지 않는 제어 문자가 있는지 검사한다.
+    """
+    return all(
+        byte == 9 or 32 <= byte <= 126 or 128 <= byte <= 255
+        for byte in value
+    )
+
+
 def parse_http(payload: bytes) -> dict | None:
-    if b"\r\n\r\n" not in payload:
-          return None
-    
-    lines = payload.split(b"\r\n")
+    # 1. 입력 타입 및 빈 데이터 검사
+    if not isinstance(payload, bytes):
+        raise TypeError("payload must be bytes")
 
-    # HTTP 요청 라인 분석
-    # 정상적인 ASCII가 아닌 바이트가 들어오면 UnicodeDecodeError가 발생하면서 함수가 중단 -> try-except 문으로 해결
-    # 패킷 분석 프로그램은 다양한 데이터를 받는다 -> 분석할 수 없는 데이터 하나 때문에 전체 프로그램이 종료되면 안된다.
-    try:
-        first_line = lines[0].decode("ascii")
-    except UnicodeDecodeError:
-          return None
+    if not payload:
+        return None
 
-    if first_line.startswith("HTTP/1.1 "):
-        #HTTP 응답
-        parts = first_line.split(" ",2)
-        if len(parts) < 2:
-                return None
-        if not parts[1].isdigit() or len(parts[1]) != 3:
-                return None
-        if not 100 <= int(parts[1]) <= 599:
-                return None
+    # 2. HTTP 헤더가 완전히 수신되었는지 검사
+    header_block, separator, _ = payload.partition(b"\r\n\r\n")
+
+    if not separator:
+        return None
+
+    lines = header_block.split(b"\r\n")
+
+    # LF 단독 줄바꿈이나 잘못된 CR 처리
+    for line in lines:
+        if b"\r" in line or b"\n" in line:
+            return None
+
+    first_line = lines[0]
+
+    # 3. HTTP 응답 분석
+    if first_line.startswith(b"HTTP/1.1 "):
+        parts = first_line.split(b" ", 2)
+
+        if len(parts) != 3:
+            return None
+
+        version_bytes, code_bytes, reason_bytes = parts
+
+        if len(code_bytes) != 3 or not code_bytes.isdigit():
+            return None
+
+        status_code = int(code_bytes)
+
+        if not 100 <= status_code <= 599:
+            return None
+
+        if not valid_field_value(reason_bytes):
+            return None
+
         kind = "response"
-        version = parts[0]
-        status_code = int(parts[1])
-        reason = parts[2] if len(parts) == 3 else ""
+        version = "HTTP/1.1"
         method = None
         target = None
+        reason = reason_bytes.decode("iso-8859-1")
+
+    # 4. HTTP 요청 분석
     else:
-         #HTTP request
-        parts = first_line.split(" ")
-        
+        parts = first_line.split(b" ")
+
         if len(parts) != 3:
-              return None
-        method , target , version = parts
-        if method not in ("GET", "POST"):
-                 return None
-        if version != "HTTP/1.1":
-                return None
+            return None
+
+        method_bytes, target_bytes, version_bytes = parts
+
+        if version_bytes != b"HTTP/1.1":
+            return None
+
+        if not METHOD_PATTERN.fullmatch(method_bytes):
+            return None
+
+        if not target_bytes:
+            return None
+
+        # 요청 대상은 출력 가능한 ASCII 문자만 허용
+        if any(byte < 33 or byte > 126 for byte in target_bytes):
+            return None
+
         kind = "request"
+        version = "HTTP/1.1"
+        method = method_bytes.decode("ascii")
+        target = target_bytes.decode("ascii")
         status_code = None
         reason = None
-        
-    
-    
 
-    
-
+    # 5. HTTP 헤더 분석
     headers = {}
 
     for line in lines[1:]:
-        if line == b"":
-            break
-
-
-        try:
-            text = line.decode("ascii")
-        except UnicodeDecodeError:
+        # 접힌 헤더(obs-fold)는 지원하지 않음
+        if not line or line.startswith((b" ", b"\t")):
             return None
-        
-        #예외 처리 : 불완전한 TCP 데이터: HTTP 헤더가 여러 TCP 세그먼트로 나뉘어 전달되어 일부 일때 : 가 빠질수도 있음
-        if ":" not in text:
-              return None
-        key, value = text.split(":", 1)
 
-        key = key.strip()
-        value = value.strip()
+        if b":" not in line:
+            return None
 
-        headers[key] = value
+        key_bytes, value_bytes = line.split(b":", 1)
 
-    #1. HTTP 헤더의 대소문자가 달라도 정상적으로 분석하기
-    normalized_headers = {
-         key.lower() : value for key,value in headers.items()
-    }
-    #2. Content-Length를 이용해 POST 요청의 본문이 잘리지 않았는지 확인하기
-    content_length = normalized_headers.get("content-length")
-    if content_length is not None:
-         if not content_length.isdigit():
-              return None
-         if kind == "request":
-            expected_length = int(content_length)
-            body = payload.split(b"\r\n\r\n", 1)[1]
-            if len(body) < expected_length:
-                 return None
+        # 잘못된 헤더 이름 검사
+        if not TOKEN_PATTERN.fullmatch(key_bytes):
+            return None
 
+        if not valid_field_value(value_bytes):
+            return None
 
-    host = normalized_headers.get("host")
+        key = key_bytes.decode("ascii").lower()
+        value = value_bytes.decode("iso-8859-1").strip(" \t")
+
+        # 중복 헤더도 리스트에 순서대로 저장
+        headers.setdefault(key, []).append(value)
+
+    # 6. Host 헤더 검증
+    host = None
+
+    if kind == "request":
+        host_values = headers.get("host", [])
+
+        if len(host_values) != 1:
+            return None
+
+        if not host_values[0]:
+            return None
+
+        host = host_values[0]
+
+    # 7. 팀 공통 인터페이스에 맞춰 반환
     return {
-    "kind": kind,
-    "version": version,
-    "method": method,
-    "target": target,
-    "status_code": status_code,
-    "reason": reason,
-    "headers": headers,
-    "host": host
+        "kind": kind,
+        "version": version,
+        "method": method,
+        "target": target,
+        "status_code": status_code,
+        "reason": reason,
+        "headers": headers,
+        "host": host
     }
