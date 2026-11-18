@@ -1,7 +1,7 @@
 # 공통 인터페이스 v1
 
 이 문서는 팀원들이 독립적으로 구현할 때 따를 **목표 계약**입니다.
-현재 Python 파일은 TODO 상태이며 아래 함수·기능은 아직 구현되지 않았습니다.
+캡처와 실행 진입점의 구현이 준비되어 있으며, 분석 파서의 계약도 함께 정의합니다.
 Python 3.12 / Ubuntu 24.04 LTS / Linux AF_PACKET을 기준으로 합니다.
 키 이름·타입·지원 범위 변경은 관련 담당자와 먼저 합의하고 이 문서와 테스트를 같은 PR에서 수정합니다.
 
@@ -56,7 +56,7 @@ iterator 구현에 따라 초기 오류는 첫 `next()` 시점에 발생할 수 
 | `direction` | `str` | `"OUTGOING"` 또는 `"INCOMING"` |
 | `packet_type` | `int` | AF_PACKET 주소 정보의 원래 `pkttype` |
 
-방향은 `recvfrom()` 주소의 `pkttype`로 판단합니다.
+방향은 프레임 수신 시 함께 반환되는 AF_PACKET 주소의 `pkttype`로 판단합니다.
 `PACKET_OUTGOING`은 `OUTGOING`, `PACKET_HOST`·`PACKET_BROADCAST`·
 `PACKET_MULTICAST`는 `INCOMING`입니다. `PACKET_OTHERHOST`와 알 수 없는 타입은
 v1에서 건너뜁니다. IP 주소나 TCP 포트로 방향을 추측하지 않습니다.
@@ -271,8 +271,7 @@ fixture는 테스트 코드 안의 합성 bytes로 만들고 실제 캡처·민�
 | SMTP(선택) | EHLO/MAIL FROM/RCPT TO/DATA 및 응답, 분할/병합 줄, 다중행 응답, 미지원 명령 |
 | 통합 | 합성 캡처→패킷→응용 파서 연결, 포트별 선택, 응용 None이어도 헤더 유지, 방향과 요청/응답의 독립성 |
 
-실행 예정: `python3.12 -m unittest discover -s tests -v`.
-현재 테스트는 TODO이므로 테스트 0개 실행은 기능 검증 완료가 아닙니다.
+테스트는 `python3.12 -m unittest discover -s tests -v`로 실행합니다.
 구현 후 Ubuntu 24.04 LTS에서 허가된 별도 실습 호스트와 양방향 HTTP/UDP DNS를
 발생시키고 Wireshark와 주소·포트·플래그·응용 필드를 대조합니다.
 사용한 Python/OS 버전, 인터페이스, 테스트 명령, 기대/실제 결과, 알려진 제한을 PR에 기록합니다.
