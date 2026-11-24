@@ -114,10 +114,93 @@ class TestApplicationAndFilter(unittest.TestCase):
     def test_korean_columns_align(self):
         header = pretty.format_row([c[0] for c in pretty.COLUMNS])
         row = pretty.format_row(["1", "16:36:06.312", "송신", "1.2.3.4:5", "→",
-                                 "5.6.7.8:80", "TCP", "SYN", "1", "0", "설명"])
+                                 "5.6.7.8:80", "64", "TCP", "SYN", "1", "0", "설명"])
         self.assertEqual(pretty.display_width(header.split("설명")[0]),
                          pretty.display_width(row.split("설명")[0]))
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestApplicationHeaders(unittest.TestCase):
+    def test_http_request_and_response_fields(self):
+        _, text = render([
+            tcp("OUTGOING", CLIENT, SERVER, 1, 1, ["psh", "ack"],
+                {"protocol": "HTTP", "kind": "request", "method": "GET", "status_code": None,
+                 "version": "HTTP/1.1", "target": "/index.html", "reason": None,
+                 "host": "example.com", "content_type": None, "content_length": None}),
+            tcp("INCOMING", SERVER, CLIENT, 1, 75, ["psh", "ack"],
+                {"protocol": "HTTP", "kind": "response", "method": None, "status_code": 200,
+                 "version": "HTTP/1.1", "target": None, "reason": "OK", "host": None,
+                 "content_type": "text/html", "content_length": "1256"}),
+        ])
+        self.assertIn("HTTP 요청: GET /index.html HTTP/1.1 (Host: example.com)", text)
+        self.assertIn("HTTP 응답: 200 OK · text/html · 1256바이트", text)
+
+    def test_dns_names_answers_ttl_and_matching(self):
+        client = ("172.26.251.191", 50505)
+        q = [{"name": "example.com", "qtype": 1}]
+        answers = [
+            {"name": "example.com", "rtype": 1, "ttl": 300, "address": "172.66.147.243"},
+            {"name": "example.com", "rtype": 1, "ttl": 300, "address": "104.20.23.154"},
+        ]
+        _, text = render([
+            udp("OUTGOING", client, ("8.8.8.8", 53),
+                {"protocol": "DNS", "kind": "query", "transaction_id": 0x375E, "rcode": 0,
+                 "questions": q, "answers": []}),
+            udp("INCOMING", ("8.8.8.8", 53), client,
+                {"protocol": "DNS", "kind": "response", "transaction_id": 0x375E, "rcode": 0,
+                 "questions": q, "answers": answers}),
+        ])
+        self.assertIn("DNS 질의 (ID 0x375e) example.com A", text)
+        self.assertIn("→ A 172.66.147.243, A 104.20.23.154 (TTL 300)", text)
+        self.assertIn("← 1번 질의의 응답", text)
+
+    def test_dns_mixed_ttl_and_unparsed_types(self):
+        text = pretty.dns_answers_text([
+            {"rtype": 5, "ttl": 60, "address": None},
+            {"rtype": 1, "ttl": 300, "address": "1.2.3.4"},
+        ])
+        self.assertEqual(text, "CNAME (TTL 60), A 1.2.3.4 (TTL 300)")
+
+    def test_dns_response_not_matched_without_query(self):
+        _, text = render([udp("INCOMING", ("8.8.8.8", 53), ("10.0.0.1", 4000),
+                              {"protocol": "DNS", "kind": "response", "transaction_id": 1,
+                               "rcode": 3, "questions": [], "answers": []})])
+        self.assertIn("rcode 3", text)
+        self.assertIn("답 없음", text)
+        self.assertNotIn("번 질의의 응답", text)
+
+    def test_smtp_argument_and_text(self):
+        server = ("10.0.0.2", 2525)
+        _, text = render([
+            tcp("OUTGOING", CLIENT, server, 1, 1, ["psh", "ack"],
+                {"protocol": "SMTP", "kind": "command", "command": "MAIL FROM", "code": None,
+                 "argument": "<alice@client.test>", "text": None}),
+            tcp("INCOMING", server, CLIENT, 1, 2, ["psh", "ack"],
+                {"protocol": "SMTP", "kind": "response", "command": None, "code": 250,
+                 "argument": None, "text": "OK"}),
+        ])
+        self.assertIn("SMTP 명령: MAIL FROM:<alice@client.test>", text)
+        self.assertIn("SMTP 응답: 250 OK", text)
+
+    def test_ttl_column(self):
+        line = json.loads(tcp("OUTGOING", CLIENT, SERVER, 1, 0, ["syn"]))
+        line["ttl"] = 64
+        _, text = render([json.dumps(line)])
+        self.assertIn("TTL", text.splitlines()[0])
+        self.assertIn(" 64 ", text)
+
+    def test_control_characters_escaped(self):
+        _, text = render([tcp("OUTGOING", CLIENT, SERVER, 1, 1, ["psh", "ack"],
+                              {"protocol": "HTTP", "kind": "request", "method": "GET",
+                               "status_code": None, "version": "HTTP/1.1", "target": "/",
+                               "reason": None, "host": "a\x1b[31mb\x9b", "content_type": None,
+                               "content_length": None})])
+        self.assertNotIn("\x1b", text)
+        self.assertNotIn("\x9b", text)
+        self.assertIn("a\\x1b[31mb\\x9b", text)
+
+    def test_long_values_truncated(self):
+        self.assertEqual(len(pretty.safe("x" * 500)), pretty.MAX_FIELD)

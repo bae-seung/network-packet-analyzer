@@ -10,6 +10,21 @@ from capture.capture import capture_packets
 from parsers import dns_parser, http_parser, packet_parser, smtp_parser
 
 
+def _first_header(headers: dict, name: str) -> str | None:
+    values = headers.get(name)
+    return values[0] if values else None
+
+
+def _dns_record(record: dict) -> dict:
+    # rdata(bytes)는 JSON으로 내보낼 수 없으므로 출력에 필요한 값만 남긴다.
+    return {
+        "name": record["name"],
+        "rtype": record["rtype"],
+        "ttl": record["ttl"],
+        "address": record["address"],
+    }
+
+
 def summarize_application(packet: dict) -> dict | None:
     payload = packet["payload"]
     if not payload:
@@ -24,6 +39,10 @@ def summarize_application(packet: dict) -> dict | None:
                 "kind": result["kind"],
                 "transaction_id": result["transaction_id"],
                 "rcode": result["rcode"],
+                "questions": [
+                    {"name": q["name"], "qtype": q["qtype"]} for q in result["questions"]
+                ],
+                "answers": [_dns_record(rr) for rr in result["answers"]],
             }
     elif packet["transport"] == "TCP":
         is_http = bool(ports & {80, 8000})
@@ -33,11 +52,18 @@ def summarize_application(packet: dict) -> dict | None:
         if is_http:
             result = http_parser.parse_http(payload)
             if result is not None:
+                headers = result["headers"]
                 return {
                     "protocol": "HTTP",
                     "kind": result["kind"],
                     "method": result["method"],
                     "status_code": result["status_code"],
+                    "version": result["version"],
+                    "target": result["target"],
+                    "reason": result["reason"],
+                    "host": result["host"],
+                    "content_type": _first_header(headers, "content-type"),
+                    "content_length": _first_header(headers, "content-length"),
                 }
         elif is_smtp:
             parse_smtp = getattr(smtp_parser, "parse_smtp", None)
@@ -49,6 +75,8 @@ def summarize_application(packet: dict) -> dict | None:
                         "kind": result["kind"],
                         "command": result["command"],
                         "code": result["code"],
+                        "argument": result["argument"],
+                        "text": result["text"],
                     }
     return None
 
@@ -69,7 +97,7 @@ def summarize_frame(frame: dict, *, capture_only: bool) -> dict | None:
     if packet is None:
         return None
     for key in (
-        "src_ip", "dst_ip", "transport", "src_port", "dst_port",
+        "src_ip", "dst_ip", "ttl", "transport", "src_port", "dst_port",
         "seq", "ack", "tcp_flags", "udp_length",
     ):
         summary[key] = packet[key]
